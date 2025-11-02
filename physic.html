@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Gyroscope Precession — τ가 L의 방향만 돌린다</title>
+<style>
+  :root{--bg:#0b0f14;--panel:#101722;--line:#1a2434;--fg:#e6eef8;--muted:#98abc1;--accent:#58a6ff;--tau:#ff7b72}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,Segoe UI,Roboto}
+  header{padding:14px 18px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#101623,#0b0f14)}
+  header h1{margin:0;font-size:18px}
+  main{display:grid;grid-template-columns:360px 1fr;gap:14px;padding:14px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px}
+  .row{display:flex;align-items:center;gap:10px;margin:8px 0}
+  .row label{flex:0 0 120px;color:var(--muted)}
+  .row input[type=range]{flex:1}
+  .val{width:70px;text-align:right;color:#cfe1fb}
+  .kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+  .card{background:#0d141f;border:1px solid #162136;border-radius:10px;padding:10px}
+  .card h3{margin:0 0 4px 0;font-size:12px;color:var(--muted)}
+  .card p{margin:0;font:600 16px/1.2 ui-monospace,Consolas,monospace;color:#d7e7ff}
+  .stage{position:relative;height:560px;border-radius:12px;overflow:hidden}
+  canvas{width:100%;height:100%;display:block;background:radial-gradient(1200px 600px at 50% 20%, #0f1623 0%, #0b0f14 60%)}
+  .legend{position:absolute;top:10px;left:10px;background:#0c1118d0;border:1px solid #162136;border-radius:8px;padding:8px 10px;color:#c8d8f2}
+  .legend div{display:flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .L{background:var(--accent)} .T{background:var(--tau)}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  button{background:#132238;border:1px solid #213450;color:#e3efff;padding:8px 10px;border-radius:8px;cursor:pointer}
+  button:hover{border-color:#325279}
+  .small{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<header><h1>자이로스코프 세차 시뮬 — τ(중력토크)가 L의 방향만 바꾼다</h1></header>
+
+<main>
+  <section class="panel">
+    <div class="row"><label>질량 m (kg)</label>
+      <input id="m" type="range" min="0.2" max="5" step="0.1" value="1.2"><div class="val" id="mVal">1.20</div></div>
+    <div class="row"><label>반지름 R (m)</label>
+      <input id="R" type="range" min="0.05" max="0.5" step="0.01" value="0.22"><div class="val" id="RVal">0.22</div></div>
+    <div class="row"><label>스핀 ω (rad/s)</label>
+      <input id="omega" type="range" min="5" max="240" step="1" value="90"><div class="val" id="omegaVal">90</div></div>
+    <div class="row"><label>기울기 θ (deg)</label>
+      <input id="theta" type="range" min="5" max="70" step="1" value="25"><div class="val" id="thetaVal">25</div></div>
+    <div class="row"><label>지레팔 ℓ (m)</label>
+      <input id="ell" type="range" min="0.05" max="0.6" step="0.01" value="0.28"><div class="val" id="ellVal">0.28</div></div>
+    <div class="row"><label>감쇠 c (0~0.02)</label>
+      <input id="damp" type="range" min="0" max="0.02" step="0.001" value="0"><div class="val" id="dampVal">0.000</div></div>
+
+    <div class="kpi">
+      <div class="card"><h3>I_spin (kg·m²)</h3><p id="Ispin">—</p></div>
+      <div class="card"><h3>세차 Ω (rad/s)</h3><p id="Omega">—</p></div>
+      <div class="card"><h3>E_rot (J)</h3><p id="Erot">—</p></div>
+      <div class="card"><h3>E_pot (J)</h3><p id="Epot">—</p></div>
+    </div>
+
+    <div class="btns">
+      <button id="reset">리셋</button>
+      <button id="toggle">일시정지</button>
+      <span class="small">팁: ω↑ 또는 R↑(→I↑) 하면 Ω↓. θ↑(→r↑) 하면 Ω↑.</span>
+    </div>
+  </section>
+
+  <section class="panel stage">
+    <div class="legend">
+      <div><span class="dot L"></span> 각운동량 L</div>
+      <div><span class="dot T"></span> 토크 τ</div>
+    </div>
+    <canvas id="cv"></canvas>
+  </section>
+</main>
+
+<script>
+  // ===== 파라미터/상태 =====
+  const g = 9.81;
+  let m=1.2, R=0.22, omegaSpin=90, thetaDeg=25, ell=0.28, damp=0.0;
+  let phi = 0;       // 세차각(수평 회전)
+  let paused = false;
+
+  const $ = id => document.getElementById(id);
+  const cv = $('cv'), ctx = cv.getContext('2d');
+
+  const binds = [
+    ['m','mVal',v=>m=parseFloat(v), v=>(+v).toFixed(2)],
+    ['R','RVal',v=>R=parseFloat(v), v=>(+v).toFixed(2)],
+    ['omega','omegaVal',v=>omegaSpin=parseFloat(v), v=>v],
+    ['theta','thetaVal',v=>thetaDeg=parseFloat(v), v=>v],
+    ['ell','ellVal',v=>ell=parseFloat(v), v=>(+v).toFixed(2)],
+    ['damp','dampVal',v=>damp=parseFloat(v), v=>(+v).toFixed(3)],
+  ];
+  binds.forEach(([sid,vid,set,fmt])=>{
+    const s=$(sid), v=$(vid); v.textContent=fmt(s.value);
+    s.addEventListener('input',()=>{ set(s.value); v.textContent=fmt(s.value); });
+  });
+  $('reset').onclick=()=>{ phi=0; };
+  $('toggle').onclick=()=>{ paused=!paused; $('toggle').textContent=paused?'재생':'일시정지'; };
+
+  function resize(){ cv.width=cv.clientWidth; cv.height=cv.clientHeight; }
+  addEventListener('resize', resize); resize();
+
+  // ===== 물리량 계산(세차 근사) =====
+  function physicsStep(dt){
+    const theta = thetaDeg*Math.PI/180;
+    const Ispin = 0.5*m*R*R;           // 원판
+    const r = ell*Math.sin(theta);     // 수직축에 대한 토크 팔
+    const L = Ispin*omegaSpin;
+    const Omega = (m*g*r) / Math.max(L,1e-9);  // 세차속도
+
+    // 감쇠(스핀 감소 → Ω 증가)
+    if(damp>0) omegaSpin = Math.max(0, omegaSpin - damp*omegaSpin*dt);
+    if(!paused) phi = (phi + Omega*dt) % (2*Math.PI);
+
+    const Erot = 0.5*Ispin*omegaSpin*omegaSpin;
+    const Epot = m*g*ell*(1-Math.cos(theta));
+    return {theta,Ispin,r,L,Omega,Erot,Epot};
+  }
+
+  // ===== 투영/그리기 유틸 =====
+  function drawArrow(x1,y1,x2,y2,color,w=2.5){
+    ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=w;
+    ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    const ang=Math.atan2(y2-y1,x2-x1), ah=8;
+    ctx.beginPath();
+    ctx.moveTo(x2,y2);
+    ctx.lineTo(x2-ah*Math.cos(ang-0.35), y2-ah*Math.sin(ang-0.35));
+    ctx.lineTo(x2-ah*Math.cos(ang+0.35), y2-ah*Math.sin(ang+0.35));
+    ctx.closePath(); ctx.fill();
+  }
+
+  function drawGyro(p){
+    const {theta,Ispin,r,L,Omega,Erot,Epot}=p;
+    const W=cv.width, H=cv.height;
+    ctx.clearRect(0,0,W,H);
+
+    // 바닥/스탠드
+    ctx.strokeStyle='#192335'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(W*0.5, H*0.88, W*0.35, H*0.07, 0, 0, Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(W*0.5, H*0.88); ctx.lineTo(W*0.5, H*0.45); ctx.stroke(); // 스탠드 기둥
+    // 피벗
+    ctx.fillStyle='#27405f'; ctx.beginPath(); ctx.arc(W*0.5, H*0.45, 6, 0, Math.PI*2); ctx.fill();
+
+    // 공간 스케일
+    const cx=W*0.5, cy=H*0.45, S=Math.min(W,H)*0.30;
+
+    // 세차 원(짐벌 베어링 경로)
+    ctx.strokeStyle='#23324a'; ctx.lineWidth=2;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy+6, S*0.70, S*0.22, 0, 0, Math.PI*2);
+    ctx.stroke();
+
+    // 축 방향(단위벡터)
+    const ax=Math.cos(phi)*Math.sin(theta);
+    const ay=Math.sin(phi)*Math.sin(theta);
+    const az=Math.cos(theta);
+
+    // 축 끝 점(팁)
+    const tipX = cx + S*0.70*ax;
+    const tipY = cy - S*(0.22*ay + 0.55*az);
+
+    // 짐벌 링(기울어진 동그라미)
+    ctx.save();
+    ctx.translate(tipX, tipY);
+    ctx.rotate(phi);
+    ctx.strokeStyle='#3a5680'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.ellipse(0,0, 46, 16, 0, 0, Math.PI*2); ctx.stroke();
+    // 로터(원판)
+    ctx.save();
+    ctx.rotate(omegaSpin*0.02); // 스핀 느낌만
+    ctx.strokeStyle='#8fb6ff'; ctx.lineWidth=2.2;
+    ctx.beginPath(); ctx.ellipse(0,0, 36, 12, 0, 0, Math.PI*2); ctx.stroke();
+    // 허브
+    ctx.fillStyle='#bcd6ff'; ctx.beginPath(); ctx.arc(0,0,3,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+    ctx.restore();
+
+    // 축(팁→피벗) 막대
+    ctx.strokeStyle='#7fb0ff'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.lineTo(tipX,tipY); ctx.stroke();
+
+    // L 벡터(축과 같은 방향)
+    const Llen = Math.min(80, 12 + 0.0025*L); // 화면 스케일
+    drawArrow(cx,cy, cx+Llen*ax, cy-Llen*(0.25*ay+0.75*az), '#58a6ff', 3);
+
+    // τ 벡터(세차 평면에서 L을 옆으로 돌림): 방향 ~ φ+π/2
+    const tauLen = Math.min(70, 10 + 2.5*m*g*r);
+    const tx = cx + tauLen*Math.cos(phi+Math.PI/2);
+    const ty = cy + tauLen*Math.sin(phi+Math.PI/2);
+    drawArrow(cx,cy, tx, ty, '#ff7b72', 3);
+
+    // KPI 표시
+    $('Ispin').textContent = (Ispin).toFixed(4);
+    $('Omega').textContent = (Omega).toFixed(4);
+    $('Erot').textContent  = (Erot).toFixed(3);
+    $('Epot').textContent  = (Epot).toFixed(3);
+  }
+
+  // ===== 메인 루프 =====
+  let last = performance.now(), acc=0, DT=1/60;
+  function loop(now){
+    const dt=(now-last)/1000; last=now; acc+=dt;
+    while(acc>=DT){ const p=physicsStep(DT); acc-=DT; drawGyro(p); }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+</script>
+</body>
+</html>
